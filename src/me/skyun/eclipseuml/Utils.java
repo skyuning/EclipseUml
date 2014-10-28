@@ -7,7 +7,9 @@ import org.eclipse.core.resources.IProject;
 import org.eclipse.core.resources.IWorkspaceRoot;
 import org.eclipse.core.resources.ResourcesPlugin;
 import org.eclipse.core.runtime.IPath;
+import org.eclipse.ui.IViewPart;
 import org.eclipse.ui.IWorkbenchPage;
+import org.eclipse.ui.PartInitException;
 import org.eclipse.ui.PlatformUI;
 
 public class Utils {
@@ -28,6 +30,15 @@ public class Utils {
 
     public static IWorkbenchPage getActivePage() {
         return PlatformUI.getWorkbench().getActiveWorkbenchWindow().getActivePage();
+    }
+
+    public static IViewPart openView(String viewId) {
+        try {
+            return PlatformUI.getWorkbench().getActiveWorkbenchWindow().getActivePage().showView(viewId);
+        } catch (PartInitException e) {
+            e.printStackTrace();
+        }
+        return null;
     }
 
     public static void saveFile(String filename, String content) throws IOException {
