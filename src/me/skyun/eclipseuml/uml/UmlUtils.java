@@ -2,15 +2,9 @@ package me.skyun.eclipseuml.uml;
 
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
+import java.util.HashSet;
 import java.util.List;
-
-import org.eclipse.jdt.core.Flags;
-import org.eclipse.jdt.core.ICompilationUnit;
-import org.eclipse.jdt.core.IMethod;
-import org.eclipse.jdt.core.IType;
-import org.eclipse.jdt.core.JavaModelException;
-import org.eclipse.jdt.core.Signature;
-import org.eclipse.jdt.internal.core.SourceRefElement;
+import java.util.Set;
 
 import me.skyun.eclipseuml.Utils;
 import net.sourceforge.plantuml.BlockUml;
@@ -18,6 +12,19 @@ import net.sourceforge.plantuml.FileFormat;
 import net.sourceforge.plantuml.FileFormatOption;
 import net.sourceforge.plantuml.SourceStringReader;
 import net.sourceforge.plantuml.core.Diagram;
+
+import org.eclipse.core.resources.IProject;
+import org.eclipse.core.runtime.CoreException;
+import org.eclipse.jdt.core.Flags;
+import org.eclipse.jdt.core.ICompilationUnit;
+import org.eclipse.jdt.core.IMethod;
+import org.eclipse.jdt.core.IType;
+import org.eclipse.jdt.core.JavaModelException;
+import org.eclipse.jdt.core.Signature;
+import org.eclipse.jdt.core.search.SearchEngine;
+import org.eclipse.jdt.core.search.SearchMatch;
+import org.eclipse.jdt.core.search.SearchRequestor;
+import org.eclipse.jdt.internal.core.ResolvedSourceType;
 
 @SuppressWarnings("restriction")
 public class UmlUtils {
@@ -43,10 +50,79 @@ public class UmlUtils {
         return "";
     }
 
-    public static String getMethodParamUml(IMethod method) throws JavaModelException {
+    /**
+     * search type reference first, and then get the compilation unit uml.
+     * 
+     * @param shell
+     * @param type
+     */
+    public static String getCompilationUnitUml(final ICompilationUnit compilationUnit) {
+        try {
+            String uml = "";
+            for (IType type : compilationUnit.getAllTypes()) {
+                uml += getTypeUml(type) + "\n";
+                uml += getSuperTypesUml(type) + "\n";
+
+                Set<IType> referedTypes = new HashSet<IType>();
+                SearchRequestor requestor = new ReferedTypeSearchRequestor(type, referedTypes);
+                new SearchEngine().searchDeclarationsOfReferencedTypes(type, requestor, null);
+                for (IType referedType : referedTypes)
+                    uml += getReferedTypesUml(type, referedType);
+                uml += "\n";
+            }
+
+            uml = String.format("@startuml\n%s@enduml", uml);
+            return uml;
+        } catch (JavaModelException e) {
+            e.printStackTrace();
+        }
+        return "";
+    }
+
+    private static class ReferedTypeSearchRequestor extends SearchRequestor {
+
+        private IType mType;
+        private Set<IType> mReferedTypes;
+        private IType[] mSuperTypes;
+
+        public ReferedTypeSearchRequestor(IType type, Set<IType> referedTypes) throws JavaModelException {
+            mType = type;
+            mReferedTypes = referedTypes;
+            mSuperTypes = mType.newSupertypeHierarchy(null).getSupertypes(mType);
+        }
+
+        @Override
+        public void acceptSearchMatch(SearchMatch match) throws CoreException {
+            if (!(match.getElement() instanceof ResolvedSourceType))
+                return;
+
+            IType referedType = (IType) match.getElement();
+            if (referedType.equals(mType))
+                return;
+
+            if (isSuperType(referedType))
+                return;
+
+            mReferedTypes.add(referedType);
+        }
+
+        private boolean isSuperType(IType type) {
+            for (IType superType : mSuperTypes) {
+                if (type.equals(superType))
+                    return true;
+            }
+            return false;
+        }
+
+        @Override
+        public void endReporting() {
+        }
+    }
+
+    private static String getMethodParamUml(IMethod method) throws JavaModelException {
         if (method.getNumberOfParameters() == 0)
             return "";
-    
+
         String[] paramTypes = method.getParameterTypes();
         String[] paramNames = method.getParameterNames();
         String paramUml = Signature.getSignatureSimpleName(paramTypes[0]) + " " + paramNames[0];
@@ -55,7 +131,7 @@ public class UmlUtils {
         return paramUml;
     }
 
-    public static String getMethodModifier(IMethod method) {
+    private static String getMethodModifierUml(IMethod method) {
         try {
             switch (method.getFlags()) {
             case Flags.AccPublic:
@@ -73,42 +149,62 @@ public class UmlUtils {
         return "";
     }
 
-    public static String getMethodUml(IMethod method) throws JavaModelException {
-        String methodUml = String.format("%s %s %s(%s)\n", getMethodModifier(method),
+    private static String getMethodUml(IMethod method) throws JavaModelException {
+        String methodUml = String.format("%s %s %s(%s)\n", getMethodModifierUml(method),
                 Signature.getSignatureSimpleName(method.getReturnType()), method.getElementName(),
                 getMethodParamUml(method));
         return methodUml;
     }
 
-    public static String getSuperTypeUml(IType type) throws JavaModelException {
-        SourceRefElement superClass = (SourceRefElement) type.newSupertypeHierarchy(null).getSuperclass(type);
-        if (superClass == null || !superClass.getPath().getFileExtension().equals("java"))
-            return "";
-    
-        String link = "uml://" + Utils.getFullPath(superClass.getJavaProject().getProject(), superClass.getPath()).toString();
-        String uml = String.format("class %s [[%s]] {\n}\n", superClass.getElementName(), link)
-                + String.format("%s -u-|> %s\n", type.getElementName(), superClass.getElementName());
+    private static String getSuperTypesUml(IType type) throws JavaModelException {
+        String uml = "'----- super type -----\n";
+        IType superClass = type.newSupertypeHierarchy(null).getSuperclass(type);
+        uml += getSuperTypeUml(type, superClass, false);
+        IType[] superInterfaces = type.newSupertypeHierarchy(null).getSuperInterfaces(type);
+        for (IType superInterface : superInterfaces)
+            uml += getSuperTypeUml(type, superInterface, true);
         return uml;
     }
 
-    public static String getTypeUml(IType type) throws JavaModelException {
+    private static String getSuperTypeUml(IType type, IType superType, boolean isInterface) {
+        if (type == null || superType == null || !superType.getPath().getFileExtension().equals("java"))
+            return "";
+
+        IProject project = superType.getJavaProject().getProject();
+        String link = "uml://" + Utils.getFullPath(project, superType.getPath()).toString();
+        String typeTag = "class";
+        String arrow = "-u-|>";
+        if (isInterface) {
+            typeTag = "interface";
+            arrow = ".r.|>";
+        }
+        String uml = String.format("%s %s [[%s]] {\n}\n", typeTag, superType.getElementName(), link)
+                + String.format("%s %s %s\n", type.getElementName(), arrow, superType.getElementName());
+        return uml;
+    }
+
+    private static String getTypeUml(IType type) throws JavaModelException {
         String methodsUml = "";
         for (IMethod method : type.getMethods())
             methodsUml += getMethodUml(method);
-    
-        String typeUml = "";
-        typeUml += String.format("class %s {\n%s}\n", type.getElementName(), methodsUml);
-    
-        typeUml += getSuperTypeUml(type);
+
+        String typeUml = String.format("'================== class %s ==================\n", type.getElementName());
+        typeUml += String.format("class %s #cc8080 {\n%s}\n", type.getElementName(), addIndent(methodsUml));
         return typeUml;
     }
 
-    public static String getCompilationUnitUml(ICompilationUnit compilationUnit) throws JavaModelException {
-        String uml = "";
-        for (IType type : compilationUnit.getAllTypes())
-            uml += getTypeUml(type);
-        uml = String.format("@startuml\n%s@enduml", uml);
+    private static String getReferedTypesUml(IType type, IType referedType) {
+        String link = "uml://"
+                + Utils.getFullPath(type.getJavaProject().getProject(), referedType.getPath()).toString();
+        String uml = String.format("class %s [[%s]] {\n}\n", referedType.getElementName(), link)
+                + String.format("%s --> %s\n", type.getElementName(), referedType.getElementName());
         return uml;
     }
 
+    private static String addIndent(String content) {
+        String s = "";
+        for (String line : content.split("\n"))
+            s += "    " + line + "\n";
+        return s;
+    }
 }
